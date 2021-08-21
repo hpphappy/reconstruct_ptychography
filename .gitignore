@@ -1,3 +1,5 @@
 *.tiff
 *.pdf
 *.h5
+*.pyc
+*.txt

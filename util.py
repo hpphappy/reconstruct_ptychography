@@ -4,6 +4,7 @@ import h5py
 import matplotlib.pyplot as plt
 import matplotlib
 import warnings
+from mpi4py import MPI
 import datetime
 from math import ceil, floor
 from matplotlib import gridspec
@@ -21,6 +22,109 @@ from scipy.special import erf
 
 from constants import *
 from interpolation import *
+
+
+comm = MPI.COMM_WORLD
+n_ranks = comm.Get_size()
+rank = comm.Get_rank()
+
+
+def initialize_object(this_obj_size, dset=None, ds_level=1, object_type='normal', initial_guess=None,
+                      output_folder=None, rank=0, n_ranks=1, save_stdout=False, timestr='',
+                      shared_file_object=True, not_first_level=False):
+
+    if not shared_file_object:
+        if not_first_level == False:
+            if initial_guess is None:
+                print_flush('Initializing with Gaussian random.', designate_rank=0, this_rank=rank,
+                            save_stdout=save_stdout, output_folder=output_folder, timestamp=timestr)
+                obj_delta = np.random.normal(size=this_obj_size, loc=8.7e-7, scale=1e-7)
+                obj_beta = np.random.normal(size=this_obj_size, loc=5.1e-8, scale=1e-8)
+                obj_delta[obj_delta < 0] = 0
+                obj_beta[obj_beta < 0] = 0
+            else:
+                print_flush('Using supplied initial guess.', designate_rank=0, this_rank=rank, save_stdout=save_stdout,
+                            output_folder=output_folder, timestamp=timestr)
+                sys.stdout.flush()
+                obj_delta = np.array(initial_guess[0])
+                obj_beta = np.array(initial_guess[1])
+        else:
+            print_flush('Initializing with previous pass.', designate_rank=0, this_rank=rank, save_stdout=save_stdout,
+                        output_folder=output_folder, timestamp=timestr)
+            obj_delta = dxchange.read_tiff(os.path.join(output_folder, 'delta_ds_{}.tiff'.format(ds_level * 2)))
+            obj_beta = dxchange.read_tiff(os.path.join(output_folder, 'beta_ds_{}.tiff'.format(ds_level * 2)))
+            obj_delta = upsample_2x(obj_delta)
+            obj_beta = upsample_2x(obj_beta)
+            obj_delta += np.random.normal(size=this_obj_size, loc=8.7e-7, scale=1e-7)
+            obj_beta += np.random.normal(size=this_obj_size, loc=5.1e-8, scale=1e-8)
+            obj_delta[obj_delta < 0] = 0
+            obj_beta[obj_beta < 0] = 0
+        if object_type == 'phase_only':
+            obj_beta[...] = 0
+        elif object_type == 'absorption_only':
+            obj_delta[...] = 0
+        np.save('init_delta_temp.npy', obj_delta)
+        np.save('init_beta_temp.npy', obj_beta)
+        obj_delta = np.zeros(this_obj_size)
+        obj_beta = np.zeros(this_obj_size)
+        obj_delta[:, :, :] = np.load('init_delta_temp.npy', allow_pickle=True)
+        obj_beta[:, :, :] = np.load('init_beta_temp.npy', allow_pickle=True)
+        comm.Barrier()
+        if rank == 0:
+            os.remove('init_delta_temp.npy')
+            os.remove('init_beta_temp.npy')
+        return obj_delta, obj_beta
+    else:
+        if initial_guess is None:
+            print_flush('Initializing with Gaussian random.', 0, rank, save_stdout=save_stdout,
+                        output_folder=output_folder, timestamp=timestr)
+            initialize_hdf5_with_gaussian(dset, rank, n_ranks, 8.7e-7, 1e-7, 5.1e-8, 1e-8)
+        else:
+            print_flush('Using supplied initial guess.', 0, rank, save_stdout=save_stdout, output_folder=output_folder,
+                        timestamp=timestr)
+            initialize_hdf5_with_arrays(dset, rank, n_ranks, initial_guess[0], initial_guess[1])
+        print_flush('Object HDF5 written.', 0, rank, save_stdout=save_stdout, output_folder=output_folder,
+                    timestamp=timestr)
+        return
+
+
+def initialize_probe(probe_size, probe_type, pupil_function=None, probe_initial=None,
+                     save_stdout=None, output_folder=None, timestr=None, save_path=None, fname=None, **kwargs):
+
+    if probe_type == 'gaussian':
+        probe_mag_sigma = kwargs['probe_mag_sigma']
+        probe_phase_sigma = kwargs['probe_phase_sigma']
+        probe_phase_max = kwargs['probe_phase_max']
+        py = np.arange(probe_size[0]) - (probe_size[0] - 1.) / 2
+        px = np.arange(probe_size[1]) - (probe_size[1] - 1.) / 2
+        pxx, pyy = np.meshgrid(px, py)
+        probe_mag = np.exp(-(pxx ** 2 + pyy ** 2) / (2 * probe_mag_sigma ** 2))
+        probe_phase = probe_phase_max * np.exp(
+            -(pxx ** 2 + pyy ** 2) / (2 * probe_phase_sigma ** 2))
+        probe_real, probe_imag = mag_phase_to_real_imag(probe_mag, probe_phase)
+    elif probe_type == 'optimizable':
+        if probe_initial is not None:
+            probe_mag, probe_phase = probe_initial
+            probe_real, probe_imag = mag_phase_to_real_imag(probe_mag, probe_phase)
+        else:
+            print_flush('Estimating probe from measured data...', 0, rank, save_stdout=save_stdout,
+                        output_folder=output_folder, timestamp=timestr)
+            probe_init = create_probe_initial_guess_ptycho(os.path.join(save_path, fname))
+            probe_real = probe_init.real
+            probe_imag = probe_init.imag
+        if pupil_function is not None:
+            probe_real = probe_real * pupil_function
+            probe_imag = probe_imag * pupil_function
+    elif probe_type == 'fixed':
+        probe_mag, probe_phase = probe_initial
+        probe_real, probe_imag = mag_phase_to_real_imag(probe_mag, probe_phase)
+    elif probe_type == 'plane':
+        probe_real = np.ones(probe_size)
+        probe_imag = np.zeros(probe_size)
+    else:
+        raise ValueError('Invalid wavefront type. Choose from \'plane\', \'fixed\', \'optimizable\'.')
+    return probe_real, probe_imag
+
 
 def preprocess(dat, blur=None, normalize_bg=False):
 
@@ -211,6 +315,172 @@ def apply_rotation(obj, coord_old, interpolation='bilinear'):
         obj_rot = np.stack(obj_rot, axis=-1)
 
     return obj_rot
+
+
+def apply_rotation_to_hdf5(dset, coord_old, rank, n_ranks, interpolation='bilinear', monochannel=False, dset_2=None):
+    """
+    If another dataset is used to store the rotated object, pass the dataset object to
+    dset_2. If dset_2 is None, rotated object will overwrite the original dataset.
+    """
+    s = dset.shape
+    slice_ls = range(rank, s[0], n_ranks)
+
+    if dset_2 is None: dset_2 = dset
+
+    if interpolation == 'nearest':
+        coord_old_1 = np.round(coord_old[:, 0]).astype('int')
+        coord_old_2 = np.round(coord_old[:, 1]).astype('int')
+    else:
+        coord_old_1 = coord_old[:, 0]
+        coord_old_2 = coord_old[:, 1]
+
+    # Clip coords, so that edge values are used for out-of-array indices
+    coord_old_1 = np.clip(coord_old_1, 0, s[1] - 1)
+    coord_old_2 = np.clip(coord_old_2, 0, s[2] - 1)
+
+    if interpolation == 'nearest':
+        for i_slice in slice_ls:
+            obj = dset[i_slice]
+            obj_rot = np.reshape(obj[coord_old_1, coord_old_2], s[1:])
+            dset_2[i_slice] = obj_rot
+    else:
+        coord_old_floor_1 = np.floor(coord_old_1).astype(int)
+        coord_old_ceil_1 = np.ceil(coord_old_1).astype(int)
+        coord_old_floor_2 = np.floor(coord_old_2).astype(int)
+        coord_old_ceil_2 = np.ceil(coord_old_2).astype(int)
+        # integer_mask_1 = (abs(coord_old_ceil_1 - coord_old_1) < 1e-5).astype(int)
+        # integer_mask_2 = (abs(coord_old_ceil_2 - coord_old_2) < 1e-5).astype(int)
+        coord_old_floor_1 = np.clip(coord_old_floor_1, 0, s[1] - 1)
+        coord_old_floor_2 = np.clip(coord_old_floor_2, 0, s[2] - 1)
+        coord_old_ceil_1 = np.clip(coord_old_ceil_1, 0, s[1] - 1)
+        coord_old_ceil_2 = np.clip(coord_old_ceil_2, 0, s[2] - 1)
+        integer_mask_1 = abs(coord_old_ceil_1 - coord_old_floor_1) < 1e-5
+        integer_mask_2 = abs(coord_old_ceil_2 - coord_old_floor_2) < 1e-5
+
+        for i_slice in slice_ls:
+            obj_rot = []
+            obj = dset[i_slice]
+            if not monochannel:
+                for i_chan in range(s[-1]):
+                    vals_ff = obj[coord_old_floor_1, coord_old_floor_2, i_chan]
+                    vals_fc = obj[coord_old_floor_1, coord_old_ceil_2, i_chan]
+                    vals_cf = obj[coord_old_ceil_1, coord_old_floor_2, i_chan]
+                    vals_cc = obj[coord_old_ceil_1, coord_old_ceil_2, i_chan]
+                    vals = vals_ff * (coord_old_ceil_1 + integer_mask_1 - coord_old_1) * (coord_old_ceil_2 + integer_mask_2 - coord_old_2) + \
+                           vals_fc * (coord_old_ceil_1 + integer_mask_1 - coord_old_1) * (coord_old_2 - coord_old_floor_2) + \
+                           vals_cf * (coord_old_1 - coord_old_floor_1) * (coord_old_ceil_2 + integer_mask_2 - coord_old_2) + \
+                           vals_cc * (coord_old_1 - coord_old_floor_1) * (coord_old_2 - coord_old_floor_2)
+                    obj_rot.append(np.reshape(vals, s[1:-1]))
+                obj_rot = np.stack(obj_rot, axis=-1)
+            else:
+                vals_ff = obj[coord_old_floor_1, coord_old_floor_2]
+                vals_fc = obj[coord_old_floor_1, coord_old_ceil_2]
+                vals_cf = obj[coord_old_ceil_1, coord_old_floor_2]
+                vals_cc = obj[coord_old_ceil_1, coord_old_ceil_2]
+                vals = vals_ff * (coord_old_ceil_1 + integer_mask_1 - coord_old_1) * (coord_old_ceil_2 + integer_mask_2 - coord_old_2) + \
+                       vals_fc * (coord_old_ceil_1 + integer_mask_1 - coord_old_1) * (coord_old_2 - coord_old_floor_2) + \
+                       vals_cf * (coord_old_1 - coord_old_floor_1) * (coord_old_ceil_2 + integer_mask_2 - coord_old_2) + \
+                       vals_cc * (coord_old_1 - coord_old_floor_1) * (coord_old_2 - coord_old_floor_2)
+                obj_rot = np.reshape(vals, s[1:3])
+            dset_2[i_slice] = obj_rot
+
+    return None
+
+
+def revert_rotation_to_hdf5(dset, coord_old, rank, n_ranks, interpolation='bilinear', monochannel=False):
+
+    s = dset.shape
+    slice_ls = range(rank, s[0], n_ranks)
+
+    if interpolation == 'nearest':
+        coord_old_1 = np.round(coord_old[:, 0]).astype('int')
+        coord_old_2 = np.round(coord_old[:, 1]).astype('int')
+    else:
+        coord_old_1 = coord_old[:, 0]
+        coord_old_2 = coord_old[:, 1]
+
+    # Clip coords, so that edge values are used for out-of-array indices
+    coord_old_1 = np.clip(coord_old_1, 0, s[1] - 1)
+    coord_old_2 = np.clip(coord_old_2, 0, s[2] - 1)
+
+    if interpolation == 'nearest':
+        for i_slice in slice_ls:
+            obj = dset[i_slice]
+            obj_rot = np.reshape(obj[coord_old_1, coord_old_2], s[1:])
+            dset[i_slice] = obj_rot
+    else:
+        coord_old_floor_1 = np.floor(coord_old_1).astype(int)
+        coord_old_ceil_1 = np.ceil(coord_old_1).astype(int)
+        coord_old_floor_2 = np.floor(coord_old_2).astype(int)
+        coord_old_ceil_2 = np.ceil(coord_old_2).astype(int)
+        # integer_mask_1 = (abs(coord_old_ceil_1 - coord_old_1) < 1e-5).astype(int)
+        # integer_mask_2 = (abs(coord_old_ceil_2 - coord_old_2) < 1e-5).astype(int)
+        coord_old_floor_1 = np.clip(coord_old_floor_1, 0, s[1] - 1)
+        coord_old_floor_2 = np.clip(coord_old_floor_2, 0, s[2] - 1)
+        coord_old_ceil_1 = np.clip(coord_old_ceil_1, 0, s[1] - 1)
+        coord_old_ceil_2 = np.clip(coord_old_ceil_2, 0, s[2] - 1)
+        integer_mask_1 = abs(coord_old_ceil_1 - coord_old_floor_1) < 1e-5
+        integer_mask_2 = abs(coord_old_ceil_2 - coord_old_floor_2) < 1e-5
+
+        for i_slice in slice_ls:
+            current_arr = dset[i_slice]
+            obj = np.zeros_like(current_arr)
+            if not monochannel:
+                for i_chan in range(s[-1]):
+                    obj[coord_old_floor_1, coord_old_floor_2, i_chan] += current_arr[:, :, i_chan].flatten() * (coord_old_ceil_1 + integer_mask_1 - coord_old_1) * (coord_old_ceil_2 + integer_mask_2 - coord_old_2)
+                    obj[coord_old_floor_1, coord_old_ceil_2, i_chan] += current_arr[:, :, i_chan].flatten() * (coord_old_ceil_1 + integer_mask_1 - coord_old_1) * (coord_old_2 - coord_old_floor_2)
+                    obj[coord_old_ceil_1, coord_old_floor_2, i_chan] += current_arr[:, :, i_chan].flatten() * (coord_old_1 - coord_old_floor_1) * (coord_old_ceil_2 + integer_mask_2 - coord_old_2)
+                    obj[coord_old_ceil_1, coord_old_ceil_2, i_chan] += current_arr[:, :, i_chan].flatten() * (coord_old_1 - coord_old_floor_1) * (coord_old_2 - coord_old_floor_2)
+            else:
+                current_arr = current_arr.flatten()
+                obj[coord_old_floor_1, coord_old_floor_2] += current_arr * (coord_old_ceil_1 + integer_mask_1 - coord_old_1) * (coord_old_ceil_2 + integer_mask_2 - coord_old_2)
+                obj[coord_old_floor_1, coord_old_ceil_2] += current_arr * (coord_old_ceil_1 + integer_mask_1 - coord_old_1) * (coord_old_2 - coord_old_floor_2)
+                obj[coord_old_ceil_1, coord_old_floor_2] += current_arr * (coord_old_1 - coord_old_floor_1) * (coord_old_ceil_2 + integer_mask_2 - coord_old_2)
+                obj[coord_old_ceil_1, coord_old_ceil_2] += current_arr * (coord_old_1 - coord_old_floor_1) * (coord_old_2 - coord_old_floor_2)
+            dset[i_slice] = obj
+
+    return None
+
+
+def initialize_hdf5_with_gaussian(dset, rank, n_ranks, delta_mu, delta_sigma, beta_mu, beta_sigma):
+
+    s = dset.shape
+    slice_ls = range(rank, s[0], n_ranks)
+
+    np.random.seed(rank)
+    for i_slice in slice_ls:
+        slice_delta = np.random.normal(size=[s[1], s[2]], loc=delta_mu, scale=delta_sigma)
+        slice_beta = np.random.normal(size=[s[1], s[2]], loc=beta_mu, scale=beta_sigma)
+        slice_data = np.stack([slice_delta, slice_beta], axis=-1)
+        slice_data[slice_data < 0] = 0
+        dset[i_slice] = slice_data
+    return None
+
+
+def initialize_hdf5_with_constant(dset, rank, n_ranks, constant_value=0):
+
+    s = dset.shape
+    slice_ls = range(rank, s[0], n_ranks)
+
+    for i_slice in slice_ls:
+        dset[i_slice] = np.full(dset[i_slice].shape, constant_value)
+    return None
+
+
+def initialize_hdf5_with_arrays(dset, rank, n_ranks, init_delta, init_beta):
+
+    s = dset.shape
+    slice_ls = range(rank, s[0], n_ranks)
+
+    for i_slice in slice_ls:
+        slice_data = np.zeros(s[1:])
+        if init_beta is not None:
+            slice_data[...] = np.stack([init_delta[i_slice], init_beta[i_slice]], axis=-1)
+        else:
+            slice_data[...] = init_delta[i_slice]
+        slice_data[slice_data < 0] = 0
+        dset[i_slice] = slice_data
+    return None
 
 
 def get_rotated_subblocks(dset, this_pos_batch, probe_size, whole_object_size, monochannel=False, mode='hdf5', interpolation='bilinear'):
@@ -484,6 +754,7 @@ def fourier_ring_correlation_PCA(grid_delta, compression_mode, obj, ref, nei, fi
 
 
     fig_ax.plot(radius_ls.astype(float) / radius_ls[-1], frc_ls, label=nei)
+    fig_ax.set_ylim(-0.1,1.1)
     plt.legend(title="n_eigenimages")
 
     if show_plot_title:
@@ -538,7 +809,7 @@ def fourier_ring_correlation_v2(grid_delta, obj, ref, n_ph_tx, fig_ax, encoding_
         nr = np.sqrt(np.count_nonzero(mask))
         T_half_bit = (0.4142 + 2.2872 / nr) / (1.4142 + 1.2872 / nr)
         T_half_bit_ls.append(T_half_bit)
-    np.save(os.path.join(save_path, 'frc_nei'+'_' + str(nei) + '.npy'), np.array(frc_ls))
+    np.save(os.path.join(save_path, 'frc_'+ str(encoding_mode)+'_' + n_ph_tx + '.npy'), np.array(frc_ls))
 
 
     fig_ax.plot(radius_ls.astype(float) / radius_ls[-1], frc_ls, label=n_ph)
@@ -555,8 +826,6 @@ def fourier_ring_correlation_v2(grid_delta, obj, ref, n_ph_tx, fig_ax, encoding_
     else:
         return None, None, radius_ls, T_half_bit_ls
 
-
-
 def half_bit_threshold(fig_ax, radius_ls, T_half_bit_ls, **kwargs):   
     fig_ax.plot(radius_ls.astype(float)/radius_ls[-1], T_half_bit_ls, 'k--', label='1/2 bit threshold')
 
@@ -571,6 +840,23 @@ def upsample_2x(arr):
         out_arr[::2, ::2, ::2] = arr[:, :, :]
         out_arr = gaussian_filter(out_arr, 1)
     return out_arr
+
+
+def print_flush(a, designate_rank=None, this_rank=None, save_stdout=True, output_folder='', timestamp=''):
+
+    a = '[{}][{}] '.format(str(datetime.datetime.today()), this_rank) + a
+    if designate_rank is not None:
+        if this_rank == designate_rank:
+            print(a)
+    else:
+        print(a)
+    if (designate_rank is None or this_rank == designate_rank) and save_stdout:
+        f = open(os.path.join(output_folder, 'stdout_{}.txt'.format(timestamp)), 'a')
+        f.write(a)
+        f.write('\n')
+        f.close()
+    sys.stdout.flush()
+    return
 
 
 def real_imag_to_mag_phase(realpart, imagpart):
@@ -646,7 +932,29 @@ def split_tasks(arr, split_size):
         res.append(arr[ind:min(ind + split_size, len(arr))])
         ind += split_size
     return res
-    
+
+
+def get_block_division(original_grid_shape, n_ranks):
+    # Must satisfy:
+    # 1. n_block_x * n_block_y = n_ranks
+    # 2. block_size[0] * n_block_y = original_grid_shape[0]
+    # 3. block_size[1] * n_block_x = original_grid_shape[1]
+    # 4. At most 1 block per rank
+    n_blocks_y = int(np.round(np.sqrt(original_grid_shape[0] / original_grid_shape[1] * n_ranks)))
+    n_blocks_x = int(np.round(np.sqrt(original_grid_shape[1] / original_grid_shape[0] * n_ranks)))
+    n_blocks = n_blocks_x * n_blocks_y
+    block_size = ceil(max([original_grid_shape[0] / n_blocks_y, original_grid_shape[1] / n_blocks_x]))
+
+    while n_blocks > n_ranks:
+        if n_blocks_y * block_size - original_grid_shape[0] > n_blocks_x * block_size - original_grid_shape[1]:
+            n_blocks_y -= 1
+        else:
+            n_blocks_x -= 1
+        n_blocks = n_blocks_x * n_blocks_y
+    # Reiterate for adjusted block arrangement.
+    block_size = ceil(max([original_grid_shape[0] / n_blocks_y, original_grid_shape[1] / n_blocks_x]))
+    return n_blocks_y, n_blocks_x, n_blocks, block_size
+
 
 def get_block_range(i_pos, n_blocks_x, block_size):
 

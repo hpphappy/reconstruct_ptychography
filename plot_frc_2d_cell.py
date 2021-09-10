@@ -14,7 +14,7 @@ params_2d_cell = {'grid_delta': np.load('cell/phantom/grid_delta.npy'),
                   'obj':[],
                   'ref':[],
                   'nei':'500',
-                  'save_path': 'cell/NMF_ptycho_recon/comparison',
+                  'save_path': 'cell/PCA_ptycho_recon/comparison',
                   'fig_ax':[],
                   'radius_ls':[],
                   'nei_intersection_ls':[],
@@ -84,7 +84,6 @@ for nei in nei_ls:
 if params['plot_T_half_th']:
     half_bit_threshold(params['fig_ax'], params['radius_ls'], params['T_half_bit_ls'])
 
-plt.legend(frameon=False)
 #params['fig_ax'].legend(loc=3, bbox_to_anchor=(1.0, 0.0, 0.5, 0.5), fontsize=12, ncol=1, title='photon number')
 plt.savefig(os.path.join(params['save_path'], 'frc_PCAmode'+str(params['compression_mode'])+'.pdf'), format='pdf')
 
@@ -104,7 +103,7 @@ print(params['radius_intersection_ls'])
 fig_ax.set_xlabel("S'")
 fig_ax.set_ylabel('FRC/half-bit crossing fraction')
 fig_ax.set_ylim(0,1.1)
-# fig_ax.set_xscale('log')
+fig_ax.set_xscale('log')
 fig_ax.legend(bbox_to_anchor=(1.04,1), loc="upper left")
 
 plt.savefig(os.path.join(params['save_path'], 'frc_'+ str(params['compression_mode'])+'_intersection.pdf'), format='pdf', dpi=600)

@@ -755,13 +755,14 @@ def fourier_ring_correlation_PCA(grid_delta, compression_mode, obj, ref, nei, fi
 
     fig_ax.plot(radius_ls.astype(float) / radius_ls[-1], frc_ls, label=nei)
     fig_ax.set_ylim(-0.1,1.1)
-    plt.legend(title="S'", bbox_to_anchor=(1.04,1), loc="upper left", frameon=False)
 
     if show_plot_title:
         fig_ax.set_title(plot_title)
     else: pass
-    fig_ax.set_xlabel('Spatial frequency (1 / Nyquist)', fontsize=12)
-    fig_ax.set_ylabel('FRC', fontsize=12)
+    fig_ax.set_xlabel('Spatial frequency (1 / Nyquist)', fontsize=18)
+    fig_ax.set_ylabel('FRC', fontsize=18)
+    fig_ax.tick_params(axis='both', labelsize= 18)
+    fig_ax.legend(title="S'", bbox_to_anchor=(1.04,1), loc="upper left", frameon=False)
 
     idx_intersection = np.argwhere(np.diff(np.sign(np.array(T_half_bit_ls) - np.array(frc_ls)))).flatten()
     if len(idx_intersection) != 0:

@@ -14,7 +14,7 @@ params_2d_cell = {'grid_delta': np.load('cell/phantom/grid_delta.npy'),
                   'obj':[],
                   'ref':[],
                   'nei':'500',
-                  'save_path': 'cell/PCA_ptycho_recon/comparison',
+                  'save_path': 'cell/NMF_ptycho_recon/comparison',
                   'fig_ax':[],
                   'radius_ls':[],
                   'nei_intersection_ls':[],
@@ -38,19 +38,19 @@ if params['compression_mode'] == 1: compression_mode = 'PCA_compressed'
 matplotlib.rcParams['pdf.fonttype'] = 'truetype'
 fontProperties = {'family': 'serif', 'serif': ['Helvetica'], 'weight': 'normal', 'size': 12}
 plt.rc('font', **fontProperties)
-#spec = gridspec.GridSpec(1, 2, width_ratios=[7, 1])
-#fig = plt.figure(figsize=(8, 5))
-spec = gridspec.GridSpec(1, 1)
-fig = plt.figure(figsize=(6, 4))
+
+# spec = gridspec.GridSpec(1, 1)
+
+spec = gridspec.GridSpec(1, 2, width_ratios=[10, 1])
+fig = plt.figure(figsize=(9, 6))
 
 params['fig_ax'] = fig.add_subplot(spec[0, 0])
-
 path = os.path.dirname(params['save_path'])
 
 if compression_mode == 'normal':
    nei_ls = ['']
 else:
-    nei_ls = [1, 10,  30 , 50, 100, 300, 1000, 1500, 2000, 2500, 3000, 3500]
+    nei_ls = [1, 10,  30 , 50, 100, 300, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000]
 nei_intersection_ls = []
 radius_intersection_ls = []
 
@@ -67,8 +67,9 @@ for nei in nei_ls:
     params['obj'] = params['obj'][:, :, 0]
     params['ref'] = dxchange.read_tiff(os.path.join(ref_dir, 'delta_ds_1.tiff'))
     params['ref'] = params['ref'][:, :, 0]   
-    # params['ref'] = dxchange.read_tiff("cell/ptychography/phantom/delta.tiff")
     
+#     params['ref'] = dxchange.read_tiff("cell/phantom/delta.tiff")
+        
     if params['show_plot_title']: Plot_title = compression_mode
     else: Plot_title = None
 
@@ -83,6 +84,7 @@ for nei in nei_ls:
 if params['plot_T_half_th']:
     half_bit_threshold(params['fig_ax'], params['radius_ls'], params['T_half_bit_ls'])
 
+plt.legend(frameon=False)
 #params['fig_ax'].legend(loc=3, bbox_to_anchor=(1.0, 0.0, 0.5, 0.5), fontsize=12, ncol=1, title='photon number')
 plt.savefig(os.path.join(params['save_path'], 'frc_PCAmode'+str(params['compression_mode'])+'.pdf'), format='pdf')
 
@@ -92,17 +94,18 @@ plt.close(fig)
 
 np.savez(os.path.join(params['save_path'], 'frc_PCAmode'+ str(params['compression_mode'])+'_intersection'), np.array(params['nei_intersection_ls']), np.array(params['radius_intersection_ls']/params['radius_ls'][-1]))
 
-fig = plt.figure(figsize=(8, 5))
+spec = gridspec.GridSpec(1, 2, width_ratios=[8, 1])
+fig = plt.figure(figsize=(9, 6))
 fig_ax = fig.add_subplot(spec[0,0])
 fig_ax.plot(params['nei_intersection_ls'], params['radius_intersection_ls']/params['radius_ls'][-1], '-bs', markerfacecolor='none', markeredgecolor='blue', label = compression_mode)
 print(params['nei_intersection_ls'])
 print(params['radius_intersection_ls'])
 
-fig_ax.set_xlabel('n_eigenimages')
+fig_ax.set_xlabel("S'")
 fig_ax.set_ylabel('FRC/half-bit crossing fraction')
-# fig_ax.set_ylim(0,1.1)
-fig_ax.set_xscale('log')
-fig_ax.legend(loc=3, bbox_to_anchor=(1.0,0.0,0.5,0.5), ncol=1, title = 'data type')
+fig_ax.set_ylim(0,1.1)
+# fig_ax.set_xscale('log')
+fig_ax.legend(bbox_to_anchor=(1.04,1), loc="upper left")
 
 plt.savefig(os.path.join(params['save_path'], 'frc_'+ str(params['compression_mode'])+'_intersection.pdf'), format='pdf', dpi=600)
 fig.clear()

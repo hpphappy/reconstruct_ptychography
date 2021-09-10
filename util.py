@@ -755,7 +755,7 @@ def fourier_ring_correlation_PCA(grid_delta, compression_mode, obj, ref, nei, fi
 
     fig_ax.plot(radius_ls.astype(float) / radius_ls[-1], frc_ls, label=nei)
     fig_ax.set_ylim(-0.1,1.1)
-    plt.legend(title="n_eigenimages")
+    plt.legend(title="S'", bbox_to_anchor=(1.04,1), loc="upper left", frameon=False)
 
     if show_plot_title:
         fig_ax.set_title(plot_title)
